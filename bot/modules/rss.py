@@ -2,10 +2,11 @@ from feedparser import parse as feedparse
 from time import sleep
 from telegram.ext import CommandHandler, CallbackQueryHandler
 from telegram import InlineKeyboardMarkup
-from threading import Lock
+from threading import Lock, Thread
+from asyncio import run
 
-from bot import dispatcher, job_queue, rss_dict, LOGGER, DB_URI, RSS_DELAY, RSS_CHAT_ID, RSS_COMMAND
-from bot.helper.telegram_helper.message_utils import sendMessage, editMessage, sendRss, sendMarkup
+from bot import dispatcher, job_queue, rss_dict, LOGGER, DB_URI, RSS_DELAY, RSS_CHAT_ID, RSS_COMMAND, AUTO_DELETE_MESSAGE_DURATION, USER_STRING_SESSION
+from bot.helper.telegram_helper.message_utils import sendMessage, editMessage, sendMarkup, auto_delete_message, sendRss_pyro, sendRss_ptb
 from bot.helper.telegram_helper.filters import CustomFilters
 from bot.helper.telegram_helper.bot_commands import BotCommands
 from bot.helper.ext_utils.db_handler import DbManger
@@ -143,8 +144,11 @@ def rss_settings(update, context):
         buttons.sbutton("Pause", "rss pause")
     else:
         buttons.sbutton("Start", "rss start")
+    if AUTO_DELETE_MESSAGE_DURATION == -1:
+        buttons.sbutton("Close", f"rss close")
     button = InlineKeyboardMarkup(buttons.build_menu(1))
-    sendMarkup('Rss Settings', context.bot, update.message, button)
+    setting = sendMarkup('Rss Settings', context.bot, update.message, button)
+    Thread(target=auto_delete_message, args=(context.bot, update.message, setting)).start()
 
 def rss_set_update(update, context):
     query = update.callback_query
@@ -157,7 +161,7 @@ def rss_set_update(update, context):
     elif data[1] == 'unsuball':
         query.answer()
         if len(rss_dict) > 0:
-            DbManger().rss_delete_all()
+            DbManger().trunc_table('rss')
             with rss_dict_lock:
                 rss_dict.clear()
             rss_job.enabled = False
@@ -175,6 +179,13 @@ def rss_set_update(update, context):
         rss_job.enabled = True
         editMessage("Rss Started", msg)
         LOGGER.info("Rss Started")
+    else:
+        query.answer()
+        try:
+            query.message.delete()
+            query.message.reply_to_message.delete()
+        except:
+            pass
 
 def rss_monitor(context):
     with rss_dict_lock:
@@ -215,7 +226,10 @@ def rss_monitor(context):
                 else:
                     feed_msg = f"<b>Name: </b><code>{rss_d.entries[feed_count]['title'].replace('>', '').replace('<', '')}</code>\n\n"
                     feed_msg += f"<b>Link: </b><code>{url}</code>"
-                sendRss(feed_msg, context.bot)
+                if USER_STRING_SESSION is None:
+                    sendRss_ptb(feed_msg, context.bot)
+                else:
+                    run(sendRss_pyro(feed_msg))
                 feed_count += 1
                 sleep(5)
             DbManger().rss_update(name, str(last_link), str(last_title))
